@@ -74,51 +74,8 @@ export async function runDorkScraperJob(jobId: string): Promise<void> {
     const maxResults = 1000; // Deep search limit
 
     // 3. Search and gather unique URLs
-    const organicResults: SerperResult[] = [];
-    const uniqueDomains = new Set<string>();
+    const uniqueUrls = new Set<string>();
     const uniqueSerperResults: SerperResult[] = [];
-
-    // Fetch already registered/imported domains to filter out duplicates cross-runs
-    const db = createSupabaseAdmin();
-    const registeredDomains = new Set<string>();
-    
-    // a. Fetch domains in registration_jobs queue
-    const { data: existingJobs } = await db
-      .from("registration_jobs")
-      .select("url");
-    if (existingJobs) {
-      for (const ej of existingJobs) {
-        if (ej.url) {
-          registeredDomains.add(getDomainFromUrl(ej.url));
-        }
-      }
-    }
-
-    // b. Fetch domains in registered_accounts table
-    const { data: existingAccounts } = await db
-      .from("registered_accounts")
-      .select("url");
-    if (existingAccounts) {
-      for (const ea of existingAccounts) {
-        if (ea.url) {
-          registeredDomains.add(getDomainFromUrl(ea.url));
-        }
-      }
-    }
-
-    // c. Fetch domains already discovered in this project to prevent re-crawling
-    const { data: existingForums } = await db
-      .from("discovered_forums")
-      .select("domain")
-      .eq("project_id", project.id);
-    const discoveredDomains = new Set<string>();
-    if (existingForums) {
-      for (const ef of existingForums) {
-        if (ef.domain) {
-          discoveredDomains.add(ef.domain);
-        }
-      }
-    }
 
     for (const q of queries) {
       // Check cancellation
@@ -131,15 +88,10 @@ export async function runDorkScraperJob(jobId: string): Promise<void> {
       try {
         const results = await searcher.searchDorkDeep(q, maxResults, project.exclude_domains || []);
         for (const res of results) {
-          const domain = getDomainFromUrl(res.url);
-          if (!domain) continue;
+          if (!res.url) continue;
           
-          // Deduplicate domains:
-          // 1. Within current job run (uniqueDomains)
-          // 2. Against existing registration jobs/accounts (registeredDomains)
-          // 3. Against already discovered forums in this project (discoveredDomains)
-          if (!uniqueDomains.has(domain) && !registeredDomains.has(domain) && !discoveredDomains.has(domain)) {
-            uniqueDomains.add(domain);
+          if (!uniqueUrls.has(res.url)) {
+            uniqueUrls.add(res.url);
             uniqueSerperResults.push(res);
           }
         }
@@ -151,7 +103,7 @@ export async function runDorkScraperJob(jobId: string): Promise<void> {
     const totalResults = uniqueSerperResults.length;
     await repo.updateJob(jobId, { total_results: totalResults });
 
-    console.log(`Discovered ${totalResults} unique forums from Google Dorking.`);
+    console.log(`Discovered ${totalResults} unique URLs from Google Dorking.`);
 
     if (totalResults === 0) {
       await repo.updateJob(jobId, { status: "completed" });
@@ -160,39 +112,52 @@ export async function runDorkScraperJob(jobId: string): Promise<void> {
 
     // 4. Crawl each domain to analyze its CMS type
     let processed = 0;
-    for (const res of uniqueSerperResults) {
-      // Check cancellation
+    let dbUpdatePromise = Promise.resolve();
+
+    const queueDbUpdate = (patch: Partial<any>) => {
+      dbUpdatePromise = dbUpdatePromise.then(async () => {
+        await repo.updateJob(jobId, patch);
+      }).catch(err => {
+        console.error("Failed to update job status:", err);
+      });
+    };
+
+    const processForum = async (res: SerperResult) => {
       const checkJob = await repo.getJob(jobId);
       if (checkJob?.status === "cancelled") {
-        console.log("Job was cancelled by user during crawling.");
         return;
       }
 
-      const domain = getDomainFromUrl(res.url);
       processed++;
-      
+      const localProcessed = processed;
+      const domain = getDomainFromUrl(res.url);
+      console.log(`[${localProcessed}/${totalResults}] Crawling discovered forum: ${domain} (${res.url})...`);
+
       try {
-        console.log(`[${processed}/${totalResults}] Crawling discovered forum: ${domain}...`);
-        
-        // Crawl domain home page or the specific search result page
         const crawlResult = await crawler.crawl(res);
+        
+        // Check cancellation again
+        const jobStatus = await repo.getJob(jobId);
+        if (jobStatus?.status === "cancelled") return;
+
         const publishDate = typeof res.raw["date"] === "string" ? res.raw["date"] : null;
         
-        // Save to discovered_forums table
         await repo.upsertDiscoveredForum({
           project_id: project.id,
           domain,
           source_url: res.url,
           title: crawlResult.title,
           cms_type: crawlResult.cms_type,
-          score: crawlResult.cms_type !== "Unknown" ? 80 : 20, // Assign higher score if CMS is recognized
+          score: crawlResult.cms_type !== "Unknown" ? 80 : 20,
           publish_date: publishDate,
         });
-
       } catch (err: any) {
         console.error(`Error crawling domain ${domain}:`, err.message);
+        
+        const jobStatus = await repo.getJob(jobId);
+        if (jobStatus?.status === "cancelled") return;
+
         const publishDate = typeof res.raw["date"] === "string" ? res.raw["date"] : null;
-        // Save anyway with Unknown CMS
         await repo.upsertDiscoveredForum({
           project_id: project.id,
           domain,
@@ -201,12 +166,32 @@ export async function runDorkScraperJob(jobId: string): Promise<void> {
           cms_type: "Unknown",
           score: 10,
           publish_date: publishDate,
-        });
+        }).catch(() => {});
       }
 
-      // Update job progress
-      await repo.updateJob(jobId, { processed_results: processed });
-    }
+      queueDbUpdate({ processed_results: localProcessed });
+    };
+
+    const concurrency = 10;
+    const forumQueue = [...uniqueSerperResults];
+    
+    const workers = Array(Math.min(concurrency, forumQueue.length))
+      .fill(null)
+      .map(async () => {
+        while (forumQueue.length > 0) {
+          const currentJob = await repo.getJob(jobId);
+          if (currentJob?.status === "cancelled") {
+            break;
+          }
+          const nextRes = forumQueue.shift();
+          if (nextRes) {
+            await processForum(nextRes);
+          }
+        }
+      });
+
+    await Promise.all(workers);
+    await dbUpdatePromise;
 
     // 5. Complete job
     await repo.updateJob(jobId, { status: "completed" });

@@ -131,21 +131,33 @@ export async function runBacklinkOpportunityJob(jobId: string): Promise<void> {
     let processed = 0;
     let success = 0;
     let failed = 0;
+    let dbUpdatePromise = Promise.resolve();
 
-    for (const url of uniqueUrls) {
-      // Check cancellation
+    const queueDbUpdate = (patch: Partial<any>, logMsg?: string, logLevel: "info" | "warn" | "error" = "info") => {
+      dbUpdatePromise = dbUpdatePromise.then(async () => {
+        if (logMsg) {
+          await repo.addLog(jobId, logMsg, logLevel);
+        }
+        await repo.updateJob(jobId, patch);
+      }).catch(err => {
+        console.error("Failed to update job status or add log:", err);
+      });
+    };
+
+    const processUrl = async (url: string) => {
+      // Check cancellation before starting
       const currentJob = await repo.getJob(jobId);
       if (currentJob?.status === "cancelled") {
-        await repo.addLog(jobId, "Tiến trình quét bị hủy bởi người dùng.", "warn");
         return;
       }
 
       processed++;
-      await repo.addLog(jobId, `[${processed}/${totalSources}] Đang crawl và phân tích: ${url}`);
+      const localProcessed = processed;
+
+      queueDbUpdate({}, `[${localProcessed}/${totalSources}] Đang crawl và phân tích: ${url}`);
 
       let serperResult = serperResultCache.get(url);
       if (!serperResult) {
-        // Fallback in case cache misses
         serperResult = {
           url,
           title: getDomainFromUrl(url),
@@ -157,10 +169,11 @@ export async function runBacklinkOpportunityJob(jobId: string): Promise<void> {
       try {
         const crawlResult = await crawler.crawl(serperResult);
         
-        // Calculate competitor info
-        const compInfo = getCompetitorInfo(url);
+        // Check cancellation again
+        const jobStatus = await repo.getJob(jobId);
+        if (jobStatus?.status === "cancelled") return;
 
-        // Extract candidate details
+        const compInfo = getCompetitorInfo(url);
         const candidate = getBacklinkCandidateFromRaw(crawlResult.raw_serper_data) || {
           is_candidate: false,
           status: "unlikely",
@@ -177,7 +190,6 @@ export async function runBacklinkOpportunityJob(jobId: string): Promise<void> {
         const crawlTime = crawlResult.crawl_time;
         const crawlStatus = crawlResult.status;
 
-        // Upsert into backlink_opportunities
         await repo.upsertOpportunity({
           project_id: project.id,
           job_id: jobId,
@@ -206,16 +218,26 @@ export async function runBacklinkOpportunityJob(jobId: string): Promise<void> {
 
         if (crawlStatus === "success") {
           success++;
-          await repo.addLog(jobId, `Crawl thành công: ${url} (CMS: ${crawlResult.cms_type}, Site Type: ${candidate.site_type}, Score: ${candidate.score})`);
+          queueDbUpdate(
+            { processed_sources: localProcessed, success_count: success, failed_count: failed },
+            `Crawl thành công: ${url} (CMS: ${crawlResult.cms_type}, Site Type: ${candidate.site_type}, Score: ${candidate.score})`
+          );
         } else {
           failed++;
-          await repo.addLog(jobId, `Crawl không thành công hoặc cần review thủ công: ${url} - Error: ${crawlResult.error}`, "warn");
+          queueDbUpdate(
+            { processed_sources: localProcessed, success_count: success, failed_count: failed },
+            `Crawl không thành công hoặc cần review thủ công: ${url} - Error: ${crawlResult.error}`,
+            "warn"
+          );
         }
-
       } catch (err: any) {
         failed++;
-        await repo.addLog(jobId, `Lỗi khi crawl ${url}: ${err.message}`, "error");
-        
+        queueDbUpdate(
+          { processed_sources: localProcessed, success_count: success, failed_count: failed },
+          `Lỗi khi crawl ${url}: ${err.message}`,
+          "error"
+        );
+
         // Save opportunity as failed
         const compInfo = getCompetitorInfo(url);
         await repo.upsertOpportunity({
@@ -242,15 +264,36 @@ export async function runBacklinkOpportunityJob(jobId: string): Promise<void> {
           raw_candidate: {},
           raw_crawl_data: {},
           last_crawled_at: new Date().toISOString(),
-        });
+        }).catch(() => {});
       }
+    };
 
-      // Update job progress
-      await repo.updateJob(jobId, {
-        processed_sources: processed,
-        success_count: success,
-        failed_count: failed,
+    const concurrency = 10;
+    const urlQueue = [...uniqueUrls];
+    
+    const workers = Array(Math.min(concurrency, urlQueue.length))
+      .fill(null)
+      .map(async () => {
+        while (urlQueue.length > 0) {
+          const currentJob = await repo.getJob(jobId);
+          if (currentJob?.status === "cancelled") {
+            break;
+          }
+          const nextUrl = urlQueue.shift();
+          if (nextUrl) {
+            await processUrl(nextUrl);
+          }
+        }
       });
+
+    await Promise.all(workers);
+    await dbUpdatePromise;
+
+    // Check cancellation one final time
+    const finalJob = await repo.getJob(jobId);
+    if (finalJob?.status === "cancelled") {
+      await repo.addLog(jobId, "Tiến trình quét bị hủy bởi người dùng.", "warn");
+      return;
     }
 
     // 6. Complete job

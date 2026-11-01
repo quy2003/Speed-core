@@ -23,6 +23,7 @@ export async function GET(request: Request) {
       search: searchParams.get("search") ?? "",
       cms: searchParams.get("cms") ?? "All CMS",
       urlDepth: parseUrlDepthFilter(searchParams.get("urlDepth")),
+      urlPattern: searchParams.get("urlPattern") ?? "all",
       jobId: searchParams.get("jobId"),
       registerFilter: parseRegisterFilter(searchParams.get("registerFilter")),
     });

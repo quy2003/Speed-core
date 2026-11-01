@@ -1,292 +1,215 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { Download, ExternalLink, Play, RefreshCw, RotateCcw, Square, Trash2 } from "lucide-react";
-import { cancelCrawlJobAction, recrawlResultsAction, startCrawlJobAction } from "@/app/crawler-url/actions";
-import { CrawlerColumnPicker } from "@/components/crawler/crawler-column-picker";
-import { Button, Input, Panel, Select, Textarea } from "@/components/ui";
-import type { CrawlJobRow, CrawlLogRow, CrawlResultRow } from "@/lib/types/crawler";
-import { getBacklinkCandidateFromRaw, type BacklinkCandidate } from "@/lib/utils/backlink-candidate";
-import {
-  CRAWLER_RESULT_COLUMN_STORAGE_KEY,
-  CRAWLER_RESULT_COLUMNS,
-  contactValues,
-  defaultVisibleColumnIds,
-  parseStoredVisibleColumns,
-  type CrawlerResultColumnId,
-} from "@/lib/utils/crawler-result-columns";
-import {
-  buildCrawlerResultsQueryParams,
-  loadCrawlerUrlViewState,
-  saveCrawlerUrlViewState,
-  type CrawlerUrlViewState,
-} from "@/lib/utils/crawler-url-view-state";
+import { Check, Copy, Download, Play, RefreshCw, RotateCcw, Square, Trash2 } from "lucide-react";
+import { cancelCrawlJobAction, startCrawlJobAction } from "@/app/crawler-url/actions";
+import { Button, Input, Panel, Textarea } from "@/components/ui";
+import type { CrawlJobRow, CrawlResultRow } from "@/lib/types/crawler";
+import { buildCrawlerResultsQueryParams } from "@/lib/utils/crawler-url-view-state";
 import { URL_DEPTH_OPTIONS, type UrlDepthFilter } from "@/lib/utils/forum-url-filter";
-import { getManualReviewReason } from "@/lib/utils/manual-review";
+import { URL_PATTERN_OPTIONS, type UrlPatternFilter } from "@/lib/utils/url-pattern-filter";
 
 const DEFAULT_DORKS = [
-  'intitle:"forum" ("register" OR "sign up") ("post thread" OR "submit thread")',
-  'inurl:register "forum" ("post a thread" OR "new thread")',
-  '"powered by xenforo" ("register" OR "sign up")',
-  '"powered by vBulletin" ("register" OR "new posts")',
-  '"powered by phpBB" ("register" OR "post a new topic")',
-  '("sign up" OR "create account") ("profile" OR "bio") ("website" OR "link")',
-  '("register" OR "create account") ("submit article" OR "write for us")',
-  '("sign up" OR "join") ("submit your site" OR "add website")',
-  '("create account" OR "sign up") ("post" OR "publish") ("community" OR "social")',
-  '("register" OR "sign up") ("website URL" OR "profile link" OR "homepage")',
+  'intitle:"forum" "register"',
+  'inurl:register "forum"',
+  '"powered by xenforo" "register"',
+  '"powered by vBulletin" "register"',
+  '"powered by phpBB" "register"',
 ].join("\n");
-const DEFAULT_BACKLINK_TARGETS = "coindesk.com\ncointelegraph.com";
-const DEFAULT_PAGES_PER_DORK = 2;
-const PAGE_SIZE = 10;
-const CRAWL_SOURCE_TABS = ["Google Dork", "Backlink"] as const;
+
+const DEFAULT_PAGES_PER_DORK = 20;
+const PAGE_SIZE = 100;
 
 function externalUrl(url: string) {
   return /^https?:\/\//i.test(url) ? url : `https://${url.replace(/^\/+/, "")}`;
 }
 
-function resultStatusLabel(row: CrawlResultRow) {
-  if (row.status === "success") return "Đã đăng ký";
-  return "--";
-}
-
-function candidateRating(candidate: BacklinkCandidate) {
-  const hasForumPostingUrl = candidate.evidence.includes("forum posting URL found");
-  if (hasForumPostingUrl && candidate.score >= 70) return "Ngon";
-  if (candidate.score >= 55) return "Có tiềm năng";
-  if (candidate.score >= 30) return "Xem xét";
-  return "Không có tiềm năng";
-}
-
-function loadVisibleColumnsFromStorage() {
-  if (typeof window === "undefined") return new Set(defaultVisibleColumnIds());
-  const stored = parseStoredVisibleColumns(window.localStorage.getItem(CRAWLER_RESULT_COLUMN_STORAGE_KEY));
-  return new Set(stored ?? defaultVisibleColumnIds());
-}
-
-function renderResultColumnCell(
-  columnId: CrawlerResultColumnId,
-  row: CrawlResultRow,
-  candidate: BacklinkCandidate | null,
-) {
-  switch (columnId) {
-    case "url":
-      return (
-        <>
-          <a
-            href={externalUrl(row.url)}
-            target="_blank"
-            rel="noreferrer"
-            className="block truncate font-medium text-white underline-offset-2 hover:text-primary hover:underline"
-            title={row.url}
-          >
-            {row.url}
-          </a>
-          {row.title ? (
-            <div className="truncate text-xs text-muted" title={row.title}>
-              {row.title}
-            </div>
-          ) : null}
-        </>
-      );
-    case "domain":
-      return (
-        <span className="block truncate font-medium text-white" title={row.domain}>
-          {row.domain}
-        </span>
-      );
-    case "rating":
-      return candidate ? (
-        <span
-          className={candidate.is_candidate ? "block truncate font-semibold text-primary" : "block truncate text-muted"}
-          title={candidate.evidence.join(", ") || candidate.note}
-        >
-          {candidateRating(candidate)} · {candidate.score}
-        </span>
-      ) : (
-        <span className="text-muted">Recrawl needed</span>
-      );
-    case "siteType":
-      return candidate ? (
-        <span className="block truncate font-medium text-white" title={candidate.evidence.join(", ") || candidate.note}>
-          {candidate.site_type}
-        </span>
-      ) : (
-        <span className="text-muted">-</span>
-      );
-    case "cms":
-      return (
-        <span className="block truncate" title={row.cms_type}>
-          {row.cms_type}
-        </span>
-      );
-    case "emails": {
-      const value = contactValues(row.emails);
-      return value ? (
-        <span className="block truncate" title={value}>
-          {value}
-        </span>
-      ) : (
-        <span className="text-muted">-</span>
-      );
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error) return errorToMessage(error.message);
+  if (typeof error === "string") return error.trim();
+  if (typeof error === "number" || typeof error === "boolean") return String(error);
+  if (typeof error === "object" && error) {
+    const record = error as Record<string, unknown>;
+    const parts: string[] = [record.message, record.error_description, record.details, record.hint, record.code]
+      .map(errorToMessage)
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join(" | ");
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "Unknown object error";
     }
-    case "phones": {
-      const value = contactValues(row.phones);
-      return value ? (
-        <span className="block truncate" title={value}>
-          {value}
-        </span>
-      ) : (
-        <span className="text-muted">-</span>
-      );
-    }
-    case "status": {
-      const label = resultStatusLabel(row);
-      return (
-        <span
-          className={`block truncate ${row.status === "success" ? "font-medium text-primary" : "text-muted"}`}
-          title={row.status === "success" ? "Crawl thành công" : row.error ?? "Crawl thất bại"}
-        >
-          {label}
-        </span>
-      );
-    }
-    default:
-      return null;
   }
+  return "Unknown error";
+}
+
+function toggleFilterValue<T extends string>(current: T[], value: T) {
+  if (value === "all") return [];
+  return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
+}
+
+function selectedFilterLabel<T extends string>(options: { value: T; label: string }[], selected: T[]) {
+  if (selected.length === 0) return options[0]?.label ?? "Tat ca";
+  if (selected.length === 1) return options.find((option) => option.value === selected[0])?.label ?? selected[0];
+  return `Da chon ${selected.length}`;
+}
+
+function MultiFilter<T extends string>({
+  options,
+  selected,
+  onToggle,
+  title,
+  className,
+}: {
+  options: { value: T; label: string }[];
+  selected: T[];
+  onToggle: (value: T) => void;
+  title: string;
+  className?: string;
+}) {
+  return (
+    <details className={`group relative ${className ?? ""}`}>
+      <summary
+        title={title}
+        className="flex h-9 cursor-pointer list-none items-center justify-between gap-3 rounded-md border border-[#1f2b3a] bg-[#0d141d] px-3 text-sm text-white outline-none transition hover:bg-[#111b29] group-open:border-primary/70"
+      >
+        <span className="truncate">{selectedFilterLabel(options, selected)}</span>
+        <span className="text-muted">⌄</span>
+      </summary>
+      <div className="absolute left-0 top-10 z-30 w-full rounded-md border border-border bg-[#0b111b] p-2 shadow-xl">
+        {options.map((option) => {
+          const checked = option.value === "all" ? selected.length === 0 : selected.includes(option.value);
+          return (
+            <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm text-white hover:bg-[#101823]">
+              <input type="checkbox" checked={checked} onChange={() => onToggle(option.value)} />
+              <span>{option.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </details>
+  );
 }
 
 export function CrawlerUrlClient() {
   const [jobName, setJobName] = useState("");
   const [dorks, setDorks] = useState(DEFAULT_DORKS);
   const [maxUrls, setMaxUrls] = useState(50);
-  const [backlinkTargets, setBacklinkTargets] = useState(DEFAULT_BACKLINK_TARGETS);
-  const [backlinkSourceLimit, setBacklinkSourceLimit] = useState(50);
-  const [crawlTab, setCrawlTab] = useState<(typeof CRAWL_SOURCE_TABS)[number]>("Google Dork");
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<CrawlJobRow | null>(null);
-  const [logs, setLogs] = useState<CrawlLogRow[]>([]);
   const [rows, setRows] = useState<CrawlResultRow[]>([]);
-  const [manualRows, setManualRows] = useState<CrawlResultRow[]>([]);
-  const [manualCount, setManualCount] = useState(0);
   const [count, setCount] = useState(0);
   const [search, setSearch] = useState("");
-  const [urlDepth, setUrlDepth] = useState<UrlDepthFilter>("all");
+  const [urlDepth, setUrlDepth] = useState<UrlDepthFilter[]>([]);
+  const [urlPattern, setUrlPattern] = useState<UrlPatternFilter[]>([]);
   const [resultJobId, setResultJobId] = useState<string | null>(null);
-  const [viewStateLoaded, setViewStateLoaded] = useState(false);
   const [page, setPage] = useState(1);
-  const [manualPage, setManualPage] = useState(1);
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [visibleColumns, setVisibleColumns] = useState<Set<CrawlerResultColumnId>>(() => new Set(defaultVisibleColumnIds()));
-  const [columnsLoaded, setColumnsLoaded] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [isCancelling, startCancelTransition] = useTransition();
 
   const isJobActive = job?.status === "running" || job?.status === "queued";
-  const activeResultColumns = useMemo(
-    () => CRAWLER_RESULT_COLUMNS.filter((column) => !column.hidden && visibleColumns.has(column.id)),
-    [visibleColumns],
-  );
-  const resultTableColSpan = 1 + activeResultColumns.length;
-
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
-  const manualTotalPages = Math.max(1, Math.ceil(manualCount / PAGE_SIZE));
   const progress = useMemo(() => {
     if (!job || job.total_urls === 0) return 0;
     return Math.round((job.processed_urls / job.total_urls) * 100);
   }, [job]);
-  function currentViewState(override?: Partial<CrawlerUrlViewState>): CrawlerUrlViewState {
-    return {
-      search: override?.search ?? search,
-      urlDepth: override?.urlDepth ?? urlDepth,
-      cms: "All CMS",
-      jobId: override?.jobId !== undefined ? override.jobId : resultJobId,
-      registerFilter: "all",
-    };
+
+  function currentResultsParams(pageOverride = page, searchOverride = search) {
+    return buildCrawlerResultsQueryParams(
+      {
+        search: searchOverride,
+        urlDepth,
+        urlPattern,
+        cms: "All CMS",
+        jobId: resultJobId,
+        registerFilter: "all",
+      },
+      {
+        page: pageOverride,
+        pageSize: PAGE_SIZE,
+      },
+    );
   }
 
-  async function loadResults(override?: { page?: number; search?: string; urlDepth?: UrlDepthFilter }) {
-    const params = buildCrawlerResultsQueryParams(currentViewState(override), {
-      page: override?.page ?? page,
-      pageSize: PAGE_SIZE,
-    });
-    const response = await fetch(`/api/crawler/results?${params.toString()}`);
+  async function loadResults(pageOverride = page, searchOverride = search) {
+    const response = await fetch(`/api/crawler/results?${currentResultsParams(pageOverride, searchOverride).toString()}`);
     const data = (await response.json()) as { rows: CrawlResultRow[]; count: number; error?: string };
-    if (!response.ok) throw new Error(data.error ?? "Không tải được kết quả.");
+    if (!response.ok) throw new Error(data.error ?? "Khong tai duoc ket qua.");
     setRows(data.rows);
     setCount(data.count);
     setSelected([]);
   }
 
-  async function loadManualReviewResults(override?: { page?: number; search?: string }) {
-    const params = new URLSearchParams({
-      page: String(override?.page ?? manualPage),
-      pageSize: String(PAGE_SIZE),
-      search: override?.search ?? search,
-    });
-    const response = await fetch(`/api/crawler/manual-review?${params.toString()}`);
-    const data = (await response.json()) as { rows: CrawlResultRow[]; count: number; error?: string };
-    if (!response.ok) throw new Error(data.error ?? "Không tải được danh sách cần kiểm tra.");
-    setManualRows(data.rows);
-    setManualCount(data.count);
-  }
+  useEffect(() => {
+    void loadResults().catch((err: unknown) => setError(errorToMessage(err)));
+  }, [page, resultJobId, urlDepth, urlPattern]);
 
   useEffect(() => {
-    setVisibleColumns(loadVisibleColumnsFromStorage());
-    setColumnsLoaded(true);
-    const storedViewState = loadCrawlerUrlViewState();
-    setSearch(storedViewState.search);
-    setUrlDepth(storedViewState.urlDepth);
-    setResultJobId(storedViewState.jobId);
-    setViewStateLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (!columnsLoaded) return;
-    window.localStorage.setItem(CRAWLER_RESULT_COLUMN_STORAGE_KEY, JSON.stringify([...visibleColumns]));
-  }, [visibleColumns, columnsLoaded]);
-
-  useEffect(() => {
-    if (!viewStateLoaded) return;
-    saveCrawlerUrlViewState(currentViewState());
-  }, [search, urlDepth, resultJobId, viewStateLoaded]);
-
-  useEffect(() => {
-    if (!viewStateLoaded) return;
-    void loadResults().catch((err: Error) => setError(err.message));
-  }, [page, urlDepth, resultJobId, viewStateLoaded]);
-
-  useEffect(() => {
-    void loadManualReviewResults().catch((err: Error) => setError(err.message));
-  }, [manualPage]);
-
-  useEffect(() => {
-    if (!viewStateLoaded) return;
     const timer = window.setTimeout(() => {
       setPage(1);
-      setManualPage(1);
-      void loadResults({ page: 1, search }).catch((err: Error) => setError(err.message));
-      void loadManualReviewResults({ page: 1, search }).catch((err: Error) => setError(err.message));
+      void loadResults(1, search).catch((err: unknown) => setError(errorToMessage(err)));
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [search, viewStateLoaded]);
+  }, [search]);
 
   useEffect(() => {
     if (!jobId) return;
+    let notFoundCount = 0;
     const timer = window.setInterval(async () => {
-      const response = await fetch(`/api/crawler/jobs/${jobId}`);
-      const data = (await response.json()) as { job: CrawlJobRow; logs: CrawlLogRow[] };
-      if (response.ok) {
+      try {
+        const response = await fetch(`/api/crawler/jobs/${jobId}`);
+        if (!response.ok) {
+          if (response.status === 404) {
+            notFoundCount += 1;
+            if (notFoundCount >= 4) {
+              window.clearInterval(timer);
+              await loadResults();
+            }
+          }
+          return;
+        }
+        notFoundCount = 0;
+        const data = (await response.json()) as { job: CrawlJobRow };
         setJob(data.job);
-        setLogs(data.logs);
         await loadResults();
-        await loadManualReviewResults();
         if (["completed", "failed", "cancelled"].includes(data.job.status)) window.clearInterval(timer);
+      } catch {
+        // network error, continue polling next tick
       }
     }, 1800);
     return () => window.clearInterval(timer);
-  }, [jobId, page, manualPage, search, urlDepth, resultJobId]);
+  }, [jobId, page, search, resultJobId, urlDepth, urlPattern]);
+
+  function startJob() {
+    setError(null);
+    startTransition(async () => {
+      const result = await startCrawlJobAction({
+        dorks,
+        pagesPerDork: DEFAULT_PAGES_PER_DORK,
+        name: jobName,
+        maxUrls,
+        excludeDomains: "",
+      });
+      if (!result.ok) {
+        setError(errorToMessage(result.error));
+        return;
+      }
+
+      setJobId(result.jobId);
+      setResultJobId(result.jobId);
+      setPage(1);
+
+      const response = await fetch(`/api/crawler/jobs/${result.jobId}`);
+      const data = (await response.json()) as { job: CrawlJobRow };
+      if (response.ok) {
+        setJob(data.job);
+      }
+    });
+  }
 
   function stopJob() {
     if (!jobId) return;
@@ -294,44 +217,13 @@ export function CrawlerUrlClient() {
     startCancelTransition(async () => {
       const result = await cancelCrawlJobAction(jobId);
       if (!result.ok) {
-        setError(result.error);
+        setError(errorToMessage(result.error));
         return;
       }
       const response = await fetch(`/api/crawler/jobs/${jobId}`);
-      const data = (await response.json()) as { job: CrawlJobRow; logs: CrawlLogRow[] };
+      const data = (await response.json()) as { job: CrawlJobRow };
       if (response.ok) {
         setJob(data.job);
-        setLogs(data.logs);
-      }
-    });
-  }
-
-  function startJob(source: "serper" | "backlinks") {
-    setError(null);
-    startTransition(async () => {
-      const result = await startCrawlJobAction({
-        dorks: source === "serper" ? dorks : "",
-        pagesPerDork: DEFAULT_PAGES_PER_DORK,
-        name: jobName,
-        maxUrls,
-        excludeDomains: "",
-        backlinkTargets: source === "backlinks" ? backlinkTargets : "",
-        backlinkSourceLimit,
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      setJobId(result.jobId);
-      setResultJobId(result.jobId);
-      setPage(1);
-      const response = await fetch(`/api/crawler/jobs/${result.jobId}`);
-      const data = (await response.json()) as { job: CrawlJobRow; logs: CrawlLogRow[] };
-      if (response.ok) {
-        setJob(data.job);
-        setLogs(data.logs);
-      } else {
-        setLogs([]);
       }
     });
   }
@@ -345,180 +237,133 @@ export function CrawlerUrlClient() {
     });
     if (!response.ok) {
       const data = (await response.json()) as { error?: string };
-      setError(data.error ?? "Không xóa được kết quả.");
+      setError(errorToMessage(data.error ?? "Khong xoa duoc ket qua."));
       return;
     }
     await loadResults();
   }
 
-  function recrawlSelected() {
-    if (selected.length === 0) return;
-    setError(null);
-    startTransition(async () => {
-      const result = await recrawlResultsAction({
-        ids: selected,
-        name: `Recrawl ${selected.length} URL`,
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      setJobId(result.jobId);
-      setResultJobId(result.jobId);
-      setPage(1);
-      const response = await fetch(`/api/crawler/jobs/${result.jobId}`);
-      const data = (await response.json()) as { job: CrawlJobRow; logs: CrawlLogRow[] };
-      if (response.ok) {
-        setJob(data.job);
-        setLogs(data.logs);
-      } else {
-        setLogs([]);
-      }
-    });
+  async function copySelectedUrls() {
+    const selectedSet = new Set(selected);
+    const urls = rows.filter((row) => selectedSet.has(row.id)).map((row) => row.url);
+    if (urls.length === 0) return;
+    await navigator.clipboard.writeText(urls.join("\n"));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
   }
 
-  const exportUrl = `/api/crawler/export?${buildCrawlerResultsQueryParams(currentViewState()).toString()}`;
+  async function downloadExport() {
+    setError(null);
+    setIsExporting(true);
+    try {
+      const response = await fetch(exportUrl);
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: unknown } | null;
+        throw new Error(errorToMessage(data?.error ?? "Khong tai duoc file XLSX."));
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "urls-domains.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(errorToMessage(err));
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  const exportUrl = `/api/crawler/export?${buildCrawlerResultsQueryParams({
+    search,
+    urlDepth,
+    urlPattern,
+    cms: "All CMS",
+    jobId: resultJobId,
+    registerFilter: "all",
+  }).toString()}`;
+
+  function updateDepthFilter(value: UrlDepthFilter) {
+    setUrlDepth((current) => toggleFilterValue(current, value));
+    setPage(1);
+  }
+
+  function updatePatternFilter(value: UrlPatternFilter) {
+    setUrlPattern((current) => toggleFilterValue(current, value));
+    setPage(1);
+  }
 
   return (
     <>
-      <section className="grid gap-4 min-h-[700px] xl:grid-cols-[minmax(0,1fr)_514px]">
+      <section>
         <Panel>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <label className="mb-1 block text-sm font-semibold">Tên dự án</label>
+              <label className="mb-1 block text-sm font-semibold">Ten du an</label>
               <Input
                 value={jobName}
                 onChange={(event) => setJobName(event.target.value)}
-                placeholder="VD: XenForo US — tuần 1"
+                placeholder="VD: Forum crypto tuan nay"
                 className="w-full"
               />
             </div>
+
             <div>
-              <label className="mb-1 block text-sm font-semibold">Max URL</label>
+              <label className="mb-1 block text-sm font-semibold">Max domain</label>
               <Input
                 type="number"
                 min={10}
                 max={2000}
                 value={maxUrls}
-                onChange={(event) =>
-                  setMaxUrls(Math.max(10, Math.min(2000, Number(event.target.value) || 500)))
-                }
+                onChange={(event) => setMaxUrls(Math.max(10, Math.min(2000, Number(event.target.value) || 500)))}
                 className="w-full"
               />
-              <p className="mt-1 text-xs text-muted">Giới hạn số URL thực sự crawl sau khi tìm nguồn (2000).</p>
+              <p className="mt-1 text-xs text-muted">Moi domain chi lay 1 URL dau tien tim thay.</p>
             </div>
           </div>
 
           <div className="mt-5 border-t border-border pt-5">
-            <div className="inline-flex rounded-md bg-[#162130] p-1">
-              {CRAWL_SOURCE_TABS.map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setCrawlTab(item)}
-                  className={`rounded px-4 py-1.5 text-sm font-semibold ${
-                    crawlTab === item ? "bg-[#070c14] text-white" : "text-muted"
-                  }`}
-                >
-                  {item}
-                </button>
-              ))}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold">Tu khoa Google / Dork</h3>
+                <p className="mt-0.5 text-xs text-muted">
+                  App chi tim 20 trang dau tren Google qua Serper trong 1 nam gan day, lay URL va domain, roi loai domain trung. Khong mo trang de doc CMS, email hay chi so.
+                </p>
+              </div>
+              <Button type="button" variant="ghost" onClick={() => setDorks(DEFAULT_DORKS)} title="Khoi phuc mac dinh">
+                <RotateCcw size={16} /> Mac dinh
+              </Button>
             </div>
-
-            {crawlTab === "Google Dork" ? (
-              <div className="mt-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold">Google Dorks</h3>
-                    <p className="mt-0.5 text-xs text-muted">Tối đa 10 dork. Hệ thống tìm URL qua Serper rồi crawl từng trang.</p>
-                  </div>
-                  <Button type="button" variant="ghost" onClick={() => setDorks(DEFAULT_DORKS)} title="Khôi phục dork mặc định">
-                    <RotateCcw size={16} /> Mặc định
-                  </Button>
-                </div>
-                <Textarea
-                  value={dorks}
-                  onChange={(event) => setDorks(event.target.value.split(/\r?\n/).slice(0, 10).join("\n"))}
-                  className="mt-3 h-60 w-full"
-                />
-                <div className="mt-3 flex justify-end">
-                  <Button
-                    onClick={() => startJob("serper")}
-                    disabled={isPending || isJobActive}
-                    className="min-w-44"
-                    title="Crawl qua Serper"
-                  >
-                    {isPending ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
-                    Bắt đầu crawl
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="mt-4">
-                <div>
-                  <h3 className="text-sm font-semibold">Competitor Backlinks</h3>
-                  <p className="mt-0.5 text-xs text-muted">
-                    Mỗi dòng một competitor domain. Hệ thống lấy referring domains active từ backlinks.sh rồi crawl các nguồn đó.
-                  </p>
-                </div>
-                <Textarea
-                  value={backlinkTargets}
-                  onChange={(event) => setBacklinkTargets(event.target.value)}
-                  className="mt-3 h-24 w-full font-mono text-xs"
-                  placeholder={"coindesk.com\ncointelegraph.com"}
-                />
-                <label className="mt-3 block text-sm font-semibold">Số source / competitor</label>
-                <Input
-                  type="number"
-                  min={10}
-                  max={1000}
-                  value={backlinkSourceLimit}
-                  onChange={(event) =>
-                    setBacklinkSourceLimit(Math.max(10, Math.min(1000, Number(event.target.value) || 100)))
-                  }
-                  className="mt-2 w-full"
-                />
-                <p className="mt-1 text-xs text-muted">Số source domain lấy từ backlinks.sh cho mỗi competitor (10–1000).</p>
-                <div className="mt-3 flex justify-end">
-                  <Button
-                    onClick={() => startJob("backlinks")}
-                    disabled={isPending || isJobActive}
-                    className="min-w-44"
-                    title="Crawl qua backlinks.sh"
-                  >
-                    {isPending ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
-                    Bắt đầu crawl
-                  </Button>
-                </div>
-              </div>
-            )}
+            <Textarea
+              value={dorks}
+              onChange={(event) => setDorks(event.target.value.split(/\r?\n/).slice(0, 10).join("\n"))}
+              className="mt-3 h-72 w-full"
+              placeholder={'"forum" "register"\n"crypto forum" "sign up"'}
+            />
+            <div className="mt-3 flex justify-end">
+              <Button onClick={startJob} disabled={isPending || isJobActive} className="min-w-44" title="Bat dau quet URL/domain">
+                {isPending ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
+                Bat dau quet
+              </Button>
+            </div>
           </div>
 
           <div className="mt-4 flex flex-wrap items-end gap-3">
             {jobId && (!job || isJobActive) && (
-              <Button
-                variant="danger"
-                onClick={stopJob}
-                disabled={isCancelling}
-                className="min-w-36"
-              >
+              <Button variant="danger" onClick={stopJob} disabled={isCancelling} className="min-w-36">
                 {isCancelling ? <RefreshCw size={16} className="animate-spin" /> : <Square size={16} />}
-                Dừng crawl
+                Dung
               </Button>
             )}
             {job && (
               <div className="text-sm text-muted">
                 {job.name ? <span className="font-medium text-white">{job.name}</span> : null}
                 {job.name ? " · " : null}
-                <span
-                  className={
-                    job.status === "running"
-                      ? "text-primary"
-                      : job.status === "cancelled"
-                        ? "text-amber-300"
-                        : undefined
-                  }
-                >
+                <span className={job.status === "running" ? "text-primary" : job.status === "cancelled" ? "text-amber-300" : undefined}>
                   {job.status}
                 </span>
                 {" · "}
@@ -528,45 +373,30 @@ export function CrawlerUrlClient() {
           </div>
           {error && <div className="mt-4 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-2 text-sm text-red-200">{error}</div>}
         </Panel>
-
-        <Panel>
-          <h2 className="text-base font-semibold">Live log</h2>
-          <div className="mt-6 h-48 overflow-auto rounded-md border border-[#1f2b3a] bg-[#0b111b] p-3 font-mono text-xs text-slate-300">
-            {logs.length === 0 ? (
-              <div>Chưa có log.</div>
-            ) : (
-              logs.map((log) => (
-                <div key={log.id} className={log.level === "error" ? "text-red-300" : "text-slate-300"}>
-                  [{new Date(log.created_at).toLocaleTimeString("vi-VN")}] {log.message}
-                </div>
-              ))
-            )}
-          </div>
-        </Panel>
       </section>
- <Panel className="mt-6">
+
+      <Panel className="mt-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Kết quả ({count})</h2>
-            <p className="text-sm text-muted">Hiển thị 10 dòng mỗi trang.</p>
+            <h2 className="text-base font-semibold">Ket qua ({count})</h2>
+            <p className="text-sm text-muted">Chi hien thi URL va domain. Moi domain chi giu mot dong.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tìm URL / domain / title" className="w-64" />
-            <Select
-              value={urlDepth}
-              onChange={(event) => {
-                setUrlDepth(event.target.value as UrlDepthFilter);
-                setPage(1);
-              }}
-              className="min-w-[190px]"
-              title="Lọc độ sâu URL"
-            >
-              {URL_DEPTH_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </Select>
+            <MultiFilter
+              options={URL_DEPTH_OPTIONS}
+              selected={urlDepth}
+              onToggle={updateDepthFilter}
+              title="Loc theo do sau URL"
+              className="min-w-[210px]"
+            />
+            <MultiFilter
+              options={URL_PATTERN_OPTIONS}
+              selected={urlPattern}
+              onToggle={updatePatternFilter}
+              title="Loc URL co chua mau"
+              className="min-w-[240px]"
+            />
+            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tim URL / domain" className="w-64" />
             {resultJobId ? (
               <Button
                 variant="ghost"
@@ -575,28 +405,14 @@ export function CrawlerUrlClient() {
                   setResultJobId(null);
                   setPage(1);
                 }}
-                title="Đang lọc theo job hiện tại — bấm để xem tất cả job"
+                title="Dang loc theo job hien tai"
               >
-                Job hiện tại ×
+                Job hien tai x
               </Button>
             ) : null}
-            <CrawlerColumnPicker visibleColumns={visibleColumns} onChange={setVisibleColumns} />
-            <a href={exportUrl}>
-              <Button variant="ghost" type="button">
-                <Download size={16} /> XLSX
-              </Button>
-            </a>
-            <Button
-              variant="ghost"
-              onClick={recrawlSelected}
-              disabled={selected.length === 0 || isPending || isJobActive}
-              title="Recrawl URL da chon"
-            >
-              {isPending ? <RefreshCw size={16} className="animate-spin" /> : <RotateCcw size={16} />}
-              Recrawl
-            </Button>
-            <Button variant="ghost" onClick={deleteSelected} disabled={selected.length === 0} title="Xóa dòng đã chọn">
-              <Trash2 size={16} />
+            <Button variant="ghost" type="button" onClick={downloadExport} disabled={isExporting}>
+              {isExporting ? <RefreshCw size={16} className="animate-spin" /> : <Download size={16} />}
+              XLSX
             </Button>
           </div>
         </div>
@@ -606,100 +422,82 @@ export function CrawlerUrlClient() {
             <thead className="bg-[#101722] text-left text-muted">
               <tr>
                 <th className="sticky left-0 z-10 w-10 bg-[#101722] px-3 py-3">
-                  <input type="checkbox" checked={rows.length > 0 && selected.length === rows.length} onChange={(event) => setSelected(event.target.checked ? rows.map((row) => row.id) : [])} />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={rows.length > 0 && selected.length === rows.length}
+                      onChange={(event) => setSelected(event.target.checked ? rows.map((row) => row.id) : [])}
+                    />
+                    <button
+                      type="button"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-[#0b111b] text-red-300 transition hover:bg-[#111b29] disabled:cursor-not-allowed disabled:opacity-45"
+                      title="Xoa URL da chon"
+                      disabled={selected.length === 0}
+                      onClick={deleteSelected}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </th>
-                {activeResultColumns.map((column) => (
-                  <th
-                    key={column.id}
-                    className={`whitespace-nowrap px-3 py-3 ${
-                      column.id === "url" ? "min-w-[280px]" : column.id === "domain" ? "min-w-[160px]" : "min-w-[120px]"
-                    }`}
-                  >
-                    {column.label}
-                  </th>
-                ))}
+                <th className="min-w-[420px] whitespace-nowrap px-3 py-3">
+                  <div className="flex items-center gap-2">
+                    <span>URL</span>
+                    <button
+                      type="button"
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-[#0b111b] px-2 text-xs font-semibold text-white transition hover:bg-[#111b29] disabled:cursor-not-allowed disabled:opacity-45"
+                      title="Copy URL da chon"
+                      disabled={selected.length === 0}
+                      onClick={copySelectedUrls}
+                    >
+                      {copied ? <Check size={13} /> : <Copy size={13} />}
+                      {copied ? "Da copy" : `Copy${selected.length > 0 ? ` (${selected.length})` : ""}`}
+                    </button>
+                  </div>
+                </th>
+                <th className="min-w-[220px] whitespace-nowrap px-3 py-3">Domain</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={resultTableColSpan} className="h-20 text-center text-muted">Chưa có dữ liệu.</td>
+                  <td colSpan={3} className="h-20 text-center text-muted">
+                    Chua co du lieu.
+                  </td>
                 </tr>
               ) : (
-                rows.map((row) => {
-                  const candidate = getBacklinkCandidateFromRaw(row.raw_serper_data);
-
-                  return (
-                    <tr key={row.id} className="border-t border-border">
-                      <td className="sticky left-0 z-10 bg-panel px-3 py-3">
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(row.id)}
-                          onChange={(event) => setSelected((current) => event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))}
-                        />
-                      </td>
-                      {activeResultColumns.map((column) => (
-                        <td key={column.id} className="max-w-[320px] px-3 py-3">
-                          {renderResultColumnCell(column.id, row, candidate)}
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="mt-4 flex items-center justify-end gap-2 text-sm text-muted">
-          <Button variant="ghost" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1}>Trước</Button>
-          <span>Trang {page}/{totalPages}</span>
-          <Button variant="ghost" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page >= totalPages}>Sau</Button>
-        </div>
-      </Panel>
-      <Panel className="mt-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">Cần kiểm tra thủ công ({manualCount})</h2>
-            <p className="text-sm text-muted">CAPTCHA, Cloudflare, login wall hoặc trang chặn bot. Hiển thị 10 dòng mỗi trang.</p>
-          </div>
-        </div>
-
-        <div className="mt-4 w-full overflow-x-auto rounded-md border border-border">
-          <table className="w-max min-w-full border-collapse text-sm">
-            <thead className="bg-[#101722] text-left text-muted">
-              <tr>
-                <th className="min-w-[320px] whitespace-nowrap px-3 py-3">URL</th>
-                <th className="min-w-[140px] whitespace-nowrap px-3 py-3">Lý do</th>
-                <th className="min-w-[120px] whitespace-nowrap px-3 py-3">Mở</th>
-              </tr>
-            </thead>
-            <tbody>
-              {manualRows.length === 0 ? (
-                <tr>
-                  <td colSpan={3} className="h-20 text-center text-muted">Chưa có URL cần kiểm tra thủ công.</td>
-                </tr>
-              ) : (
-                manualRows.map((row) => (
+                rows.map((row) => (
                   <tr key={row.id} className="border-t border-border">
-                    <td className="min-w-[320px] whitespace-nowrap px-3 py-3">
+                    <td className="sticky left-0 z-10 bg-panel px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(row.id)}
+                        onChange={(event) =>
+                          setSelected((current) =>
+                            event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id),
+                          )
+                        }
+                      />
+                    </td>
+                    <td className="max-w-[620px] px-3 py-3">
                       <a
                         href={externalUrl(row.url)}
                         target="_blank"
                         rel="noreferrer"
-                        className="font-medium text-white underline-offset-2 hover:text-primary hover:underline"
+                        className="block truncate font-medium text-white underline-offset-2 hover:text-primary hover:underline"
+                        title={row.url}
                       >
                         {row.url}
                       </a>
-                      <div className="text-xs text-muted">{row.title ?? row.domain}</div>
+                      {row.title ? (
+                        <div className="truncate text-xs text-muted" title={row.title}>
+                          {row.title}
+                        </div>
+                      ) : null}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-3 text-amber-300">{getManualReviewReason(row.error) ?? "Blocked"}</td>
-                    <td className="whitespace-nowrap px-3 py-3">
-                      <a href={externalUrl(row.url)} target="_blank" rel="noreferrer">
-                        <Button variant="ghost" type="button">
-                          <ExternalLink size={16} /> Mở
-                        </Button>
-                      </a>
+                    <td className="max-w-[260px] px-3 py-3">
+                      <span className="block truncate font-medium text-white" title={row.domain}>
+                        {row.domain}
+                      </span>
                     </td>
                   </tr>
                 ))
@@ -709,23 +507,17 @@ export function CrawlerUrlClient() {
         </div>
 
         <div className="mt-4 flex items-center justify-end gap-2 text-sm text-muted">
-          <Button variant="ghost" onClick={() => setManualPage((value) => Math.max(1, value - 1))} disabled={manualPage <= 1}>
-            Trước
+          <Button variant="ghost" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1}>
+            Truoc
           </Button>
           <span>
-            Trang {manualPage}/{manualTotalPages}
+            Trang {page}/{totalPages}
           </span>
-          <Button
-            variant="ghost"
-            onClick={() => setManualPage((value) => Math.min(manualTotalPages, value + 1))}
-            disabled={manualPage >= manualTotalPages}
-          >
+          <Button variant="ghost" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page >= totalPages}>
             Sau
           </Button>
         </div>
       </Panel>
-
-     
     </>
   );
 }

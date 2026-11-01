@@ -9,18 +9,17 @@ export type CrawlerResultColumnDef = {
   label: string;
   defaultVisible: boolean;
   locked?: boolean;
-  /** Tạm ẩn khỏi bảng và column picker */
   hidden?: boolean;
 };
 
 export const CRAWLER_RESULT_COLUMNS: CrawlerResultColumnDef[] = [
   { id: "url", label: "URL", defaultVisible: true, locked: true },
   { id: "domain", label: "Domain", defaultVisible: true },
-  { id: "rating", label: "Đánh giá", defaultVisible: true },
-  { id: "siteType", label: "Loại trang", defaultVisible: true },
-  { id: "cms", label: "CMS", defaultVisible: true },
-  { id: "emails", label: "Emails", defaultVisible: true },
-  { id: "phones", label: "SĐT", defaultVisible: true },
+  { id: "rating", label: "Danh gia", defaultVisible: false, hidden: true },
+  { id: "siteType", label: "Loai trang", defaultVisible: false, hidden: true },
+  { id: "cms", label: "CMS", defaultVisible: false, hidden: true },
+  { id: "emails", label: "Emails", defaultVisible: false, hidden: true },
+  { id: "phones", label: "SDT", defaultVisible: false, hidden: true },
   { id: "status", label: "Status", defaultVisible: false, hidden: true },
 ];
 

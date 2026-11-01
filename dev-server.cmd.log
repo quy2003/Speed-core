@@ -1,0 +1,17 @@
+
+> speed-core@0.1.0 dev
+> next dev --hostname 127.0.0.1 --port 3000
+
+   ▲ Next.js 15.5.18
+   - Local:        http://127.0.0.1:3000
+   - Network:      http://127.0.0.1:3000
+   - Environments: .env
+   - Experiments (use with caution):
+     · serverActions
+
+ ✓ Starting...
+ ✓ Ready in 1950ms
+ ✓ Compiled /middleware in 203ms (170 modules)
+ ○ Compiling /login ...
+ ✓ Compiled /login in 5.3s (783 modules)
+ GET /login 200 in 5596ms

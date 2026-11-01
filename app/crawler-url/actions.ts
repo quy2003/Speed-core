@@ -15,15 +15,13 @@ export async function startCrawlJobAction(input: {
 }) {
   try {
     const dorks = normalizeDorks(input.dorks);
-    const pagesPerDork = Math.max(1, Math.min(10, Number(input.pagesPerDork) || 2));
+    const pagesPerDork = Math.max(1, Math.min(20, Number(input.pagesPerDork) || 20));
     const maxUrls = Math.max(10, Math.min(2000, Number(input.maxUrls) || 500));
     const excludeDomains = normalizeExcludeDomains(input.excludeDomains ?? "");
-    const backlinkTargets = normalizeBacklinkTargets(input.backlinkTargets);
-    const backlinkSourceLimit = Math.max(10, Math.min(1000, Number(input.backlinkSourceLimit) || 100));
     const name = input.name?.trim().slice(0, 120) || null;
 
-    if (dorks.length === 0 && backlinkTargets.length === 0) {
-      return { ok: false as const, error: "Vui long nhap it nhat 1 Google Dork hoac 1 competitor domain." };
+    if (dorks.length === 0) {
+      return { ok: false as const, error: "Vui long nhap it nhat 1 tu khoa Google." };
     }
 
     const repo = new CrawlerRepository();
@@ -33,8 +31,8 @@ export async function startCrawlJobAction(input: {
       name,
       maxUrls,
       excludeDomains,
-      backlinkTargets,
-      backlinkSourceLimit,
+      backlinkTargets: [],
+      backlinkSourceLimit: 100,
       directUrls: [],
     });
     await repo.addLog(job.id, "Job da vao queue.");
@@ -115,12 +113,7 @@ export async function cancelCrawlJobAction(jobId: string) {
 }
 
 function formatCrawlerActionError(error: unknown) {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "object" && error && "message" in error
-        ? String((error as { message?: unknown }).message)
-        : String(error);
+  const message = errorToMessage(error);
 
   if (message.includes("crawl_jobs") || message.includes("schema cache")) {
     return "Thieu bang crawler trong Supabase. Hay chay file supabase/migrations/000_apply_crawler.sql trong Supabase SQL Editor.";
@@ -129,24 +122,28 @@ function formatCrawlerActionError(error: unknown) {
   return message || "Khong the thuc hien crawler action.";
 }
 
-function normalizeBacklinkTargets(input: unknown) {
-  if (typeof input !== "string") return [];
-  const seen = new Set<string>();
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error) return errorToMessage(error.message);
+  if (typeof error === "string") return error.trim();
+  if (typeof error === "number" || typeof error === "boolean") return String(error);
 
-  return input
-    .split(/[\r\n,;]+/)
-    .map((value) =>
-      value
-        .trim()
-        .toLowerCase()
-        .replace(/^https?:\/\//, "")
-        .replace(/^www\./, "")
-        .split("/")[0],
-    )
-    .filter((domain) => {
-      if (!domain || !domain.includes(".") || seen.has(domain)) return false;
-      seen.add(domain);
-      return true;
-    })
-    .slice(0, 20);
+  if (typeof error === "object" && error) {
+    const record = error as Record<string, unknown>;
+    const parts = [record.message, record.error_description, record.details, record.hint, record.code]
+      .flatMap((value) => {
+        const message = errorToMessage(value);
+        return message ? [message] : [];
+      });
+
+    if (parts.length > 0) return parts.join(" | ");
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "Unknown object error";
+    }
+  }
+
+  return "";
 }
+

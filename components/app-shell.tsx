@@ -4,16 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  Archive,
   Database,
-  FileText,
+  Link2,
   ListChecks,
-  LogOut,
   PanelsTopLeft,
   Search,
-  ShieldCheck,
   Target,
 } from "lucide-react";
-import { signOutAction } from "@/app/login/actions";
 import { SpeedCoreLogo } from "@/components/speed-core-logo";
 import { cn } from "@/lib/utils";
 
@@ -21,10 +19,10 @@ const navItems = [
   { href: "/", label: "Tổng quan", icon: PanelsTopLeft },
   { href: "/crawler-url", label: "Cào Dork & Crawl URL", icon: Search },
   { href: "/backlink-opportunities", label: "Cơ hội Backlink", icon: Target },
+  { href: "/url-storage", label: "Kho URL", icon: Archive },
+  { href: "/url-extractor", label: "Nạp URL & Trích domain", icon: Link2 },
   { href: "/resources", label: "Tài nguyên", icon: Database },
   { href: "/register-forum", label: "Đăng ký diễn đàn", icon: ListChecks },
-  { href: "/registered-forums", label: "Diễn đàn đã đăng ký", icon: ShieldCheck },
-  { href: "/posted-backlinks", label: "Backlink đã đăng", icon: FileText },
 ];
 
 export function AppShell({ children, title }: { children: React.ReactNode; title: string }) {
@@ -59,18 +57,6 @@ export function AppShell({ children, title }: { children: React.ReactNode; title
           </nav>
         </div>
 
-        {/* Logout */}
-        <div className="absolute bottom-0 left-0 right-0 border-t border-border p-2">
-          <form action={signOutAction}>
-            <button
-              type="submit"
-              className="flex w-full min-h-8 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-[#6b7a8d] transition hover:bg-[#101823] hover:text-white"
-            >
-              <LogOut size={17} />
-              <span>Đăng xuất</span>
-            </button>
-          </form>
-        </div>
       </aside>
       <main className="min-h-screen min-w-0 pl-[250px]">
         <header className="flex h-10 items-center gap-3 border-b border-border bg-panel2 px-5 text-sm text-muted">

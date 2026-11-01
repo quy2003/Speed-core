@@ -38,6 +38,7 @@ export class SerperService {
           q: query,
           page,
           num: 10,
+          tbs: "qdr:y",
         }),
       });
 
@@ -53,7 +54,7 @@ export class SerperService {
           title: item.title,
           snippet: item.snippet,
           position: item.position,
-          raw: { ...item, dork: query, page },
+          raw: { ...item, dork: query, page, tbs: "qdr:y" },
         });
       }
     }

@@ -1,11 +1,6 @@
 export const DEFAULT_EXCLUDE_DOMAINS = [
   "google.com", "google.com.vn", "google.co.uk", "google.co.jp", "google.fr", "google.de", "google.it", "google.es", "google.ca", "google.com.au",
-  "bing.com", "yahoo.com", "yandex.ru", "duckduckgo.com", "baidu.com", "yandex.com",
-  "facebook.com", "youtube.com", "twitter.com", "instagram.com", "linkedin.com", "pinterest.com",
-  "tiktok.com", "wikipedia.org", "w3schools.com", "github.com", "gitlab.com", "stackoverflow.com",
-  "stackexchange.com", "medium.com", "quora.com", "reddit.com", "wordpress.com", "blogger.com",
-  "blogspot.com", "tumblr.com", "netflix.com", "amazon.com", "ebay.com", "apple.com", "microsoft.com",
-  "pinterest.co.uk", "t.co", "bit.ly", "tinyurl.com", "youtu.be", "vimeo.com"
+  "bing.com", "yahoo.com", "yandex.ru", "duckduckgo.com", "baidu.com", "yandex.com"
 ];
 
 export function normalizeExcludeDomains(input: unknown): string[] {
@@ -38,7 +33,20 @@ export function isHostnameExcluded(hostname: string, excludeDomains: string[]) {
   );
 }
 
+export function isHomepageUrl(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr.trim());
+    const path = url.pathname.toLowerCase();
+    return path === "" || path === "/" || path === "/index.html" || path === "/index.php" || path === "/index.htm";
+  } catch {
+    return false;
+  }
+}
+
 export function isUrlExcluded(url: string, excludeDomains: string[]) {
+  if (isHomepageUrl(url)) {
+    return true;
+  }
   const mergedExcludes = [...new Set([...DEFAULT_EXCLUDE_DOMAINS, ...excludeDomains])];
   try {
     const hostname = new URL(url).hostname;
